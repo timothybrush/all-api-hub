@@ -19,6 +19,7 @@ import {
   getInterceptedOctopusCookieHeader,
   getInterceptedOctopusRootRequestCount,
   getInterceptedOctopusStatusRequestCount,
+  INTERCEPTED_OCTOPUS_ORIGIN,
   NEW_API_CREATED_ID,
   openInterceptedAxonHubManagedSiteChannels,
   openInterceptedDoneHubManagedSiteChannels,
@@ -292,17 +293,19 @@ test("uses the current Octopus cookie session in a real extension browser", asyn
   extensionId,
   page,
 }) => {
-  await openInterceptedOctopusManagedSiteChannels({
+  const { getChannelKey } = await openInterceptedOctopusManagedSiteChannels({
     context,
     extensionId,
     page,
   })
   await waitForExtensionRoot(page)
 
+  const originalKey = getChannelKey()
+  expect(originalKey).not.toBe("")
   await expect(page.getByRole("table")).toBeVisible()
   await expect
     .poll(async () =>
-      (await context.cookies("https://octopus.example.invalid")).find(
+      (await context.cookies(INTERCEPTED_OCTOPUS_ORIGIN)).find(
         (cookie) => cookie.name === "auth",
       ),
     )
@@ -311,6 +314,47 @@ test("uses the current Octopus cookie session in a real extension browser", asyn
   await expect.poll(getInterceptedOctopusStatusRequestCount).toBeGreaterThan(0)
   expect(getInterceptedOctopusRootRequestCount()).toBe(0)
   await expect(page.getByText("Unable to load channels")).toBeHidden()
+  await expect(channelRowByName(page, "Example outbound")).toContainText(
+    "Anthropic",
+  )
+  const { rowTestToken } = await openManagedSiteChannelRowActions(
+    page,
+    "Example outbound",
+  )
+  await page
+    .getByTestId(getManagedSiteChannelRowEditActionTestId(rowTestToken))
+    .click()
+  await expect(
+    page.getByTestId(CHANNEL_DIALOG_TEST_IDS.typeSelect),
+  ).toContainText("Anthropic")
+  await expect(page.getByTestId(CHANNEL_DIALOG_TEST_IDS.keyInput)).toHaveValue(
+    "",
+  )
+  await page
+    .getByTestId(CHANNEL_DIALOG_TEST_IDS.nameInput)
+    .fill("Example outbound renamed")
+  await page.getByTestId(CHANNEL_DIALOG_TEST_IDS.submitButton).click()
+  await expect(page.getByTestId(CHANNEL_DIALOG_TEST_IDS.form)).toBeHidden()
+  await expect(
+    channelRowByName(page, "Example outbound renamed"),
+  ).toContainText("Anthropic")
+  await page.reload()
+  await expect(channelRowByName(page, "Example outbound renamed")).toBeVisible()
+  expect(getChannelKey()).toBe(originalKey)
+
+  const unauthorizedStatus = await page.evaluate(async (origin) => {
+    const response = await fetch(`${origin}/api/v1/channel/update`, {
+      method: "POST",
+      credentials: "omit",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: 17, name: "Unauthorized edit", key: "" }),
+    })
+    return response.status
+  }, INTERCEPTED_OCTOPUS_ORIGIN)
+  expect(unauthorizedStatus).toBe(401)
+  expect(getChannelKey()).toBe(originalKey)
+  await page.reload()
+  await expect(channelRowByName(page, "Example outbound renamed")).toBeVisible()
 })
 
 test("runs the AxonHub native edit and migration preview through the shared UI", async ({
